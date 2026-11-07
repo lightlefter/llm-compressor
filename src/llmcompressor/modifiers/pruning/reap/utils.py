@@ -285,6 +285,7 @@ class REAPSaliencyTracker:
         topk_indices: torch.Tensor,
         topk_weights: torch.Tensor,
         expert_norms_dict: dict[int, torch.Tensor],
+        token_mask: torch.Tensor | None = None,
     ):
         """
         Vectorized accumulation over one batch.
@@ -294,13 +295,39 @@ class REAPSaliencyTracker:
         :param expert_norms_dict: dict mapping expert_idx to output norms
             ``[num_routed_tokens]`` for tokens routed to that expert (sparse
             routing: experts only see tokens the router sent to them)
+        :param token_mask: optional mask with one entry per token, e.g.
+            ``[batch, seq_len]``. Only tokens where the mask is nonzero
+            contribute to the statistics. Masked-out tokens are still routed
+            and their norms still recorded (the experts compute them anyway);
+            they are simply excluded from the accumulation
         """
         if not expert_norms_dict:
             return
 
-        self.total_count += topk_indices.numel()
+        if token_mask is not None:
+            token_mask = token_mask.to(
+                device=topk_indices.device, dtype=torch.bool
+            ).reshape(-1)
+            if token_mask.numel() != topk_indices.shape[0]:
+                raise ValueError(
+                    f"Token mask of {token_mask.numel()} tokens cannot be aligned "
+                    f"with the {topk_indices.shape[0]} tokens seen by the MoE "
+                    "layer. Token masking requires a loss mask covering exactly "
+                    "the tokens of the batch"
+                )
+
+        self.total_count += (
+            topk_indices.numel()
+            if token_mask is None
+            else int(token_mask.sum().item()) * topk_indices.shape[1]
+        )
 
         if get_calibrate_all_experts_flag():
+            if token_mask is not None:
+                # dense norms are gathered per token below, so rows can be
+                # filtered up front without breaking alignment
+                topk_indices = topk_indices[token_mask]
+                topk_weights = topk_weights[token_mask]
             stacked_norms = torch.stack(
                 [expert_norms_dict[i] for i in range(self.num_experts)], dim=1
             )
@@ -335,6 +362,13 @@ class REAPSaliencyTracker:
 
             # Vectorized computation using index_add_
             contrib = flat_weights * flat_norms
+            if token_mask is not None:
+                # flat order is (slot, token), so the per-token mask repeats
+                # once per top-k slot; every norm stays aligned with its
+                # selection, only kept tokens are accumulated
+                keep = token_mask.repeat(topk_indices.shape[1])
+                flat_idx = flat_idx[keep]
+                contrib = contrib[keep]
             self.sum_saliency.index_add_(0, flat_idx, contrib)
             self.count.index_add_(
                 0, flat_idx, torch.ones_like(flat_idx, dtype=torch.float32)

@@ -25,6 +25,7 @@ from llmcompressor.core import Event, State
 from llmcompressor.modeling.moe.context import get_calibrate_all_experts_flag
 from llmcompressor.modeling.moe.linear_experts import ExpertMLP
 from llmcompressor.modifiers import Modifier
+from llmcompressor.modifiers.utils.pytorch_helpers import get_current_loss_mask
 from llmcompressor.modifiers.pruning.reap.utils import (
     MoeModelAttrs,
     REAPSaliencyTracker,
@@ -67,6 +68,13 @@ class REAPPruningModifier(Modifier):
         (ordered by layer). Use ``tools/plot_reap_report.py`` to generate a
         saliency visualization. Required when ``sparsity`` is ``0.0``, since the
         report is then the modifier's only output.
+
+    Token masking: when the calibration data is loaded with
+    ``use_loss_mask=True`` and provides a ``loss_mask`` field, only tokens
+    where the mask is nonzero contribute to the saliency statistics (e.g.
+    only assistant responses). Masked-out tokens still flow through the model;
+    they are simply excluded from the accumulated statistics, exactly like
+    the masking applied to the AWQ activation statistics and the GPTQ Hessian.
 
     Example recipe::
 
@@ -365,7 +373,9 @@ class REAPPruningModifier(Modifier):
         args: tuple,
         output: Any,
     ):
-        """Combine router decisions with expert norms to update saliency."""
+        """Combine router decisions with expert norms to update saliency.
+        Only tokens selected by the current batch's loss mask (if any)
+        contribute to the statistics."""
         top_k_indices = args[1]
         top_k_weights = args[2]
 
@@ -376,6 +386,11 @@ class REAPPruningModifier(Modifier):
         norm_buffer = self._norm_buffers[layer_name]
 
         with torch.no_grad():
-            tracker.update(top_k_indices, top_k_weights, norm_buffer)
+            tracker.update(
+                top_k_indices,
+                top_k_weights,
+                norm_buffer,
+                token_mask=get_current_loss_mask(),
+            )
 
         self._norm_buffers[layer_name] = {}
