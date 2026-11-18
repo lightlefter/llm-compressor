@@ -202,7 +202,7 @@ def test_update_token_mask_calibrate_all_experts(monkeypatch):
         topk_indices,
         topk_weights,
         expert_norms_dict,
-        token_mask=torch.tensor([1, 0]),
+        token_mask=torch.tensor([True, False]),
     )
 
     # only token 0: expert 0 @ 0.6 * norm 3.0, expert 1 @ 0.4 * norm 2.0
@@ -217,10 +217,18 @@ def test_update_token_mask_all_masked_out(monkeypatch):
     _set_calibrate_all_experts(monkeypatch, False)
 
     tracker = REAPSaliencyTracker(num_experts=4, device=torch.device("cpu"))
+    topk_indices = torch.tensor([[0, 1], [0, 2]])
+    topk_weights = torch.tensor([[0.6, 0.4], [0.5, 0.5]])
+    expert_norms_dict = {
+        0: torch.tensor([3.0, 1.0]),
+        1: torch.tensor([2.0]),
+        2: torch.tensor([4.0]),
+    }
+
     tracker.update(
-        torch.tensor([[0, 1], [0, 2]]),
-        torch.tensor([[0.6, 0.4], [0.5, 0.5]]),
-        {0: torch.tensor([3.0, 1.0]), 1: torch.tensor([2.0]), 2: torch.tensor([4.0])},
+        topk_indices,
+        topk_weights,
+        expert_norms_dict,
         token_mask=torch.tensor([False, False]),
     )
 
@@ -234,11 +242,17 @@ def test_update_token_mask_shape_mismatch():
     """A mask which does not cover exactly the tokens seen by the layer
     raises instead of silently misaligning the statistics."""
     tracker = REAPSaliencyTracker(num_experts=4, device=torch.device("cpu"))
+    topk_indices = torch.tensor([[0, 1]])
+    topk_weights = torch.tensor([[0.5, 0.5]])
+    expert_norms_dict = {
+        0: torch.tensor([1.0]),
+        1: torch.tensor([1.0]),
+    }
 
     with pytest.raises(ValueError, match="cannot be aligned"):
         tracker.update(
-            torch.tensor([[0, 1]]),
-            torch.tensor([[0.5, 0.5]]),
-            {0: torch.tensor([1.0]), 1: torch.tensor([1.0])},
+            topk_indices,
+            topk_weights,
+            expert_norms_dict,
             token_mask=torch.tensor([True, False, True]),
         )

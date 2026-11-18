@@ -29,7 +29,8 @@ However, excess pruning can lead to a degradation in model quality, as shown in 
 When the calibration data provides a `loss_mask` field and is loaded with
 `use_loss_mask=True`, only tokens where the mask is nonzero contribute to the
 saliency statistics — e.g. only assistant responses, excluding user prompts
-and role headers (see `qwen3_example_with_masking.py`). Masked-out tokens
+and role headers (see `qwen3_example_with_masking.py` and
+`reap_moonlight_16b_with_masking.py`). Masked-out tokens
 still flow through the model; they are simply excluded from the accumulated
 statistics, exactly like the masking applied to the AWQ activation statistics
 and the GPTQ Hessian.
