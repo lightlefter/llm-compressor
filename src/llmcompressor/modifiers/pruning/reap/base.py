@@ -25,7 +25,6 @@ from llmcompressor.core import Event, State
 from llmcompressor.modeling.moe.context import get_calibrate_all_experts_flag
 from llmcompressor.modeling.moe.linear_experts import ExpertMLP
 from llmcompressor.modifiers import Modifier
-from llmcompressor.modifiers.utils.pytorch_helpers import get_current_loss_mask
 from llmcompressor.modifiers.pruning.reap.utils import (
     MoeModelAttrs,
     REAPSaliencyTracker,
@@ -33,6 +32,7 @@ from llmcompressor.modifiers.pruning.reap.utils import (
     prune_moe_layer,
     update_model_config,
 )
+from llmcompressor.modifiers.utils.pytorch_helpers import get_current_loss_mask
 
 __all__ = ["REAPPruningModifier"]
 
