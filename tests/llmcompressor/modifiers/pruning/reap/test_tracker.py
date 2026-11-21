@@ -137,3 +137,122 @@ def test_reduce_stats_is_a_no_op_when_not_distributed():
     tracker.reduce_saliency_stats()
     assert tracker.sum_saliency is sum_saliency
     assert tracker.total_count == 4.0
+
+
+# ---------------------------------------------------------------------------
+# Token masking
+# ---------------------------------------------------------------------------
+
+
+def _set_calibrate_all_experts(monkeypatch, enabled: bool):
+    import llmcompressor.modeling.moe.context as context
+
+    monkeypatch.setattr(context, "_CALIBRATE_ALL_EXPERTS", enabled)
+
+
+@pytest.mark.unit
+def test_update_token_mask_excludes_masked_tokens(monkeypatch):
+    """Only tokens where the mask is nonzero contribute to the statistics.
+
+    Masking out token 1 excludes its selections (expert 0 @ weight 0.5 with
+    norm 1.0 and expert 2 @ weight 0.5 with norm 4.0) while token 0's
+    selections are accumulated as usual."""
+    _set_calibrate_all_experts(monkeypatch, False)
+
+    tracker = REAPSaliencyTracker(num_experts=4, device=torch.device("cpu"))
+    topk_indices = torch.tensor([[0, 1], [0, 2]])
+    topk_weights = torch.tensor([[0.6, 0.4], [0.5, 0.5]])
+    expert_norms_dict = {
+        0: torch.tensor([3.0, 1.0]),
+        1: torch.tensor([2.0]),
+        2: torch.tensor([4.0]),
+    }
+
+    tracker.update(
+        topk_indices,
+        topk_weights,
+        expert_norms_dict,
+        token_mask=torch.tensor([True, False]),
+    )
+
+    assert tracker.total_count == 2.0
+    assert tracker.sum_saliency.tolist() == pytest.approx([1.8, 0.8, 0.0, 0.0])
+    assert tracker.count.tolist() == pytest.approx([1.0, 1.0, 0.0, 0.0])
+    assert tracker.mean_saliency.tolist() == pytest.approx([1.8, 0.8, 0.0, 0.0])
+
+
+@pytest.mark.unit
+def test_update_token_mask_calibrate_all_experts(monkeypatch):
+    """In calibrate_all_experts mode the masked tokens are dropped from the
+    routing decisions up front; norms are gathered per token, so alignment
+    is preserved."""
+    _set_calibrate_all_experts(monkeypatch, True)
+
+    tracker = REAPSaliencyTracker(num_experts=4, device=torch.device("cpu"))
+    topk_indices = torch.tensor([[0, 1], [0, 2]])
+    topk_weights = torch.tensor([[0.6, 0.4], [0.5, 0.5]])
+    expert_norms_dict = {
+        0: torch.tensor([3.0, 1.0]),
+        1: torch.tensor([2.0, 5.0]),
+        2: torch.tensor([6.0, 4.0]),
+        3: torch.tensor([7.0, 8.0]),
+    }
+
+    tracker.update(
+        topk_indices,
+        topk_weights,
+        expert_norms_dict,
+        token_mask=torch.tensor([True, False]),
+    )
+
+    # only token 0: expert 0 @ 0.6 * norm 3.0, expert 1 @ 0.4 * norm 2.0
+    assert tracker.total_count == 2.0
+    assert tracker.sum_saliency.tolist() == pytest.approx([1.8, 0.8, 0.0, 0.0])
+    assert tracker.count.tolist() == pytest.approx([1.0, 1.0, 0.0, 0.0])
+
+
+@pytest.mark.unit
+def test_update_token_mask_all_masked_out(monkeypatch):
+    """An all-zero mask accumulates nothing but keeps the tracker usable."""
+    _set_calibrate_all_experts(monkeypatch, False)
+
+    tracker = REAPSaliencyTracker(num_experts=4, device=torch.device("cpu"))
+    topk_indices = torch.tensor([[0, 1], [0, 2]])
+    topk_weights = torch.tensor([[0.6, 0.4], [0.5, 0.5]])
+    expert_norms_dict = {
+        0: torch.tensor([3.0, 1.0]),
+        1: torch.tensor([2.0]),
+        2: torch.tensor([4.0]),
+    }
+
+    tracker.update(
+        topk_indices,
+        topk_weights,
+        expert_norms_dict,
+        token_mask=torch.tensor([False, False]),
+    )
+
+    assert tracker.total_count == 0.0
+    assert tracker.sum_saliency.tolist() == pytest.approx([0.0, 0.0, 0.0, 0.0])
+    assert tracker.count.tolist() == pytest.approx([0.0, 0.0, 0.0, 0.0])
+
+
+@pytest.mark.unit
+def test_update_token_mask_shape_mismatch():
+    """A mask which does not cover exactly the tokens seen by the layer
+    raises instead of silently misaligning the statistics."""
+    tracker = REAPSaliencyTracker(num_experts=4, device=torch.device("cpu"))
+    topk_indices = torch.tensor([[0, 1]])
+    topk_weights = torch.tensor([[0.5, 0.5]])
+    expert_norms_dict = {
+        0: torch.tensor([1.0]),
+        1: torch.tensor([1.0]),
+    }
+
+    with pytest.raises(ValueError, match="cannot be aligned"):
+        tracker.update(
+            topk_indices,
+            topk_weights,
+            expert_norms_dict,
+            token_mask=torch.tensor([True, False, True]),
+        )
